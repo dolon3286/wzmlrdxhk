@@ -60,7 +60,7 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
                     )
                 if isinstance(message, (int, str)):
                     return await TgClient.bot.send_photo(
-                        chat_id=message,
+                        chat_id=int(message),
                         photo=photo,
                         caption=text,
                         reply_markup=buttons,
@@ -139,9 +139,7 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
         return await send_message(message, text, parse_mode=ParseMode.DISABLED)
     except PeerIdInvalid:
         if isinstance(message, int):
-            await TgClient.bot.resolve_peer(message)
-            return await send_message(message, text, buttons, block, photo)
-        raise
+            return await send_message(int(message), text, buttons, block, photo)
     except Exception as e:
         LOGGER.error(str(e), exc_info=True)
         return str(e)
