@@ -109,31 +109,31 @@ class TelegramUploader:
             self._thumb = None
 
     async def _msg_to_reply(self):
+        # If up_dest exists, use it as upload anchor and do NOT show start banner
         if self._listener.up_dest:
-            msg_link = (
-                self._listener.message.link if self._listener.is_super_chat else ""
-            )
-            msg = f"""➲ <b><u>Leech Started :</u></b>
-┃
-┠ <b>User :</b> {self._listener.user.mention} ( #ID{self._listener.user_id} ){f"\n┠ <b>Message Link :</b> <a href='{msg_link}'>Click Here</a>" if msg_link else ""}
-┖ <b>Source :</b> <a href='{self._listener.source_url}'>Click Here</a>"""
             try:
                 await TgClient.bot.resolve_peer(self._listener.up_dest)
+                # send a tiny silent placeholder in dump/log channel
                 self._log_msg = await TgClient.bot.send_message(
                     chat_id=self._listener.up_dest,
-                    text=msg,
+                    text=".",                               # no banner text
                     disable_web_page_preview=True,
                     message_thread_id=self._listener.chat_thread_id,
                     disable_notification=True,
                 )
                 self._sent_msg = self._log_msg
+
+                # if user session is needed (>2GB), switch context
                 if self._user_session:
                     self._sent_msg = await TgClient.user.get_messages(
                         chat_id=self._sent_msg.chat.id,
                         message_ids=self._sent_msg.id,
                     )
                 else:
+                    # check if dump chat is private (keeps original logic intact)
                     self._is_private = self._sent_msg.chat.type.name == "PRIVATE"
+
+                # Master Logic Preserved: Copied to leech_dest if set
                 if self._listener.leech_dest:
                     try:
                         leech_dest = self._listener.leech_dest
@@ -156,6 +156,7 @@ class TelegramUploader:
                 await self._listener.on_upload_error(str(e))
                 return False
 
+        # If no up_dest, use original behavior:
         elif self._user_session:
             self._sent_msg = await TgClient.user.get_messages(
                 chat_id=self._listener.message.chat.id, message_ids=self._listener.mid
@@ -163,7 +164,7 @@ class TelegramUploader:
             if self._sent_msg is None:
                 self._sent_msg = await TgClient.user.send_message(
                     chat_id=self._listener.message.chat.id,
-                    text="Deleted Cmd Message! Don't delete the cmd message again!",
+                    text="Don't delete the command message next time.",
                     disable_web_page_preview=True,
                     disable_notification=True,
                 )
@@ -231,7 +232,7 @@ class TelegramUploader:
                 cap_mono,
             )
 
-        if len(file_) > 64:
+        if len(file_) > 56:
             if is_archive(file_):
                 name = get_base_name(file_)
                 ext = file_.split(name, 1)[1]
@@ -246,7 +247,7 @@ class TelegramUploader:
                 ext = ""
             if self._lsuffix:
                 ext = f"{self._lsuffix}{ext}"
-            name = name[: 64 - len(ext)]
+            name = name[: 56 - len(ext)]
             file_ = f"{name}{ext}"
         elif self._lsuffix:
             name, ext = ospath.splitext(file_)
@@ -339,6 +340,50 @@ class TelegramUploader:
         res = await self._msg_to_reply()
         if not res:
             return
+
+        # --- START: AUTO-ZIP IMAGES ---
+        import shutil
+        import os
+        
+        # Only run this if the download is a folder (not a single file)
+        if ospath.isdir(self._path):
+            img_exts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff']
+            pack_name = "Images_Pack"
+            pack_path = ospath.join(self._path, pack_name)
+            has_images = False
+
+            # Walk through the folder to find images
+            for root, dirs, files in os.walk(self._path):
+                if pack_name in root: continue # Don't scan the folder we are creating
+                
+                for file in files:
+                    ext = ospath.splitext(file)[1].lower()
+                    if ext in img_exts:
+                        if not ospath.exists(pack_path):
+                            os.makedirs(pack_path)
+                        
+                        file_path = ospath.join(root, file)
+                        target_file = ospath.join(pack_path, file)
+                        
+                        # Handle duplicate filenames
+                        if ospath.exists(target_file):
+                            base, extension = ospath.splitext(file)
+                            import random
+                            target_file = ospath.join(pack_path, f"{base}_{random.randint(1,999)}{extension}")
+                            
+                        try:
+                            shutil.move(file_path, target_file)
+                            has_images = True
+                        except Exception as e:
+                            LOGGER.error(f"Failed to move image: {e}")
+
+            # If images were found, Zip them and delete the raw folder
+            if has_images:
+                LOGGER.info(f"Found images! Zipping them into {pack_name}.zip to avoid flood limit.")
+                shutil.make_archive(pack_path, 'zip', pack_path)
+                shutil.rmtree(pack_path)
+        # --- END: AUTO-ZIP IMAGES ---
+
         is_log_del = False
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
@@ -503,7 +548,7 @@ class TelegramUploader:
                     quote=True,
                     thumb=thumb,
                     caption=cap_mono,
-                    disable_content_type_detection=True,
+                    force_document=True,
                     disable_notification=True,
                     progress=self._upload_progress,
                 )
